@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "watchlist",
+  "compatibility_date": "2025-04-04",
+  "main": "./workers/app.ts",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "watchlist-db",
+      "database_id": "ab9439e5-1f5f-49d1-9c49-4da0f57c5319",
+      "migrations_dir": "drizzle"
+    }
+  ]
+}
