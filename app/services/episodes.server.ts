@@ -2,12 +2,15 @@ import { eq, and, asc } from "drizzle-orm";
 import type { Database } from "~/db";
 import { schema } from "~/db";
 import { getSeasonDetails, getTVDetails } from "./tmdb.server";
+import { isSeasonActive } from "~/lib/seasons";
+export { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
 
 export async function initTVProgress(
   db: Database,
   watchlistItemId: number,
   tmdbId: number,
-  accessToken: string
+  accessToken: string,
+  seasons?: number[]
 ) {
   const details = await getTVDetails(accessToken, tmdbId);
 
@@ -20,6 +23,7 @@ export async function initTVProgress(
       totalSeasons: details.number_of_seasons,
       showStatus: mapShowStatus(details.status),
       airDayOfWeek: computeAirDay(details),
+      watchedSeasons: seasons ? JSON.stringify(seasons) : null,
       lastCheckedAt: new Date().toISOString(),
     })
     .onConflictDoUpdate({
@@ -28,12 +32,13 @@ export async function initTVProgress(
         totalSeasons: details.number_of_seasons,
         showStatus: mapShowStatus(details.status),
         airDayOfWeek: computeAirDay(details),
+        watchedSeasons: seasons ? JSON.stringify(seasons) : null,
         lastCheckedAt: new Date().toISOString(),
       },
     })
     .returning();
 
-  // Fetch episodes for all seasons
+  // Fetch episodes for all seasons (cache everything, filter on read)
   await fetchAndCacheEpisodes(db, watchlistItemId, tmdbId, details.number_of_seasons, accessToken);
 
   return progress;
@@ -112,14 +117,13 @@ export async function markEpisodesUpTo(
   seasonNumber: number,
   episodeNumber: number
 ) {
-  // Get all episodes for this item
+  // Only mark episodes within the same season up to the target episode
   const allEpisodes = await getEpisodesForItem(db, watchlistItemId);
   const now = new Date().toISOString();
 
   for (const ep of allEpisodes) {
     const shouldBeWatched =
-      ep.seasonNumber < seasonNumber ||
-      (ep.seasonNumber === seasonNumber && ep.episodeNumber <= episodeNumber);
+      ep.seasonNumber === seasonNumber && ep.episodeNumber <= episodeNumber;
 
     if (shouldBeWatched && !ep.watched) {
       await db
@@ -154,22 +158,43 @@ export async function getAllTVProgress(db: Database) {
 
 export async function computeNewEpisodeCount(
   db: Database,
-  watchlistItemId: number
+  watchlistItemId: number,
+  watchedSeasons?: number[] | null
 ): Promise<number> {
   const episodes = await getEpisodesForItem(db, watchlistItemId);
   const today = new Date().toISOString().split("T")[0];
 
   return episodes.filter(
-    (ep) => !ep.watched && ep.airDate && ep.airDate <= today
+    (ep) =>
+      !ep.watched &&
+      ep.airDate &&
+      ep.airDate <= today &&
+      isSeasonActive(ep.seasonNumber, watchedSeasons ?? null)
   ).length;
 }
 
 export async function getNextUnwatchedEpisode(
   db: Database,
-  watchlistItemId: number
+  watchlistItemId: number,
+  watchedSeasons?: number[] | null
 ) {
   const episodes = await getEpisodesForItem(db, watchlistItemId);
-  return episodes.find((ep) => !ep.watched);
+  return episodes.find(
+    (ep) =>
+      !ep.watched &&
+      isSeasonActive(ep.seasonNumber, watchedSeasons ?? null)
+  );
+}
+
+export async function updateWatchedSeasons(
+  db: Database,
+  watchlistItemId: number,
+  seasons: number[]
+) {
+  return db
+    .update(schema.tvProgress)
+    .set({ watchedSeasons: JSON.stringify(seasons) })
+    .where(eq(schema.tvProgress.watchlistItemId, watchlistItemId));
 }
 
 function mapShowStatus(

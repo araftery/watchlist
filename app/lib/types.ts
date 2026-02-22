@@ -25,6 +25,16 @@ export interface WatchProvider {
   displayPriority: number;
 }
 
+export interface TMDBSeasonSummary {
+  id: number;
+  name: string;
+  seasonNumber: number;
+  episodeCount: number;
+  airDate: string | null;
+  posterPath: string | null;
+  overview: string;
+}
+
 export type ItemStatus = "to_watch" | "watching" | "watched" | "dropped";
 export type Vibe = "casual" | "engaged";
 export type MediaType = "movie" | "tv";

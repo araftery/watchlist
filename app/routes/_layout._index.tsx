@@ -9,6 +9,7 @@ import { Sparkles, Popcorn, Calendar } from "lucide-react";
 import { getTMDBImageUrl } from "~/lib/tmdb-image";
 import { PosterCard } from "~/components/poster-card";
 import { useLayoutContext } from "~/lib/layout-context";
+import { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const db = getDb(context.cloudflare.env.DB);
@@ -50,11 +51,22 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       const episodes = await db.query.episodes.findMany({
         where: eq(schema.episodes.watchlistItemId, item.id),
       });
+      const activeSeasonsRaw = parseWatchedSeasons(progress?.watchedSeasons ?? null);
       const unwatchedAired = episodes.filter(
-        (ep) => !ep.watched && ep.airDate && ep.airDate <= today
+        (ep) =>
+          !ep.watched &&
+          ep.airDate &&
+          ep.airDate <= today &&
+          isSeasonActive(ep.seasonNumber, activeSeasonsRaw)
       );
       const nextUpcoming = episodes
-        .filter((ep) => !ep.watched && ep.airDate && ep.airDate > today)
+        .filter(
+          (ep) =>
+            !ep.watched &&
+            ep.airDate &&
+            ep.airDate > today &&
+            isSeasonActive(ep.seasonNumber, activeSeasonsRaw)
+        )
         .sort((a, b) => (a.airDate || "").localeCompare(b.airDate || ""))[0];
 
       return {

@@ -1,4 +1,4 @@
-import { useLoaderData, useFetcher, Link, redirect } from "react-router";
+import { useLoaderData, useFetcher, Link, redirect, Await } from "react-router";
 import { eq, and, asc } from "drizzle-orm";
 import { getDb, schema } from "~/db";
 import type { Route } from "./+types/_layout.item.$id";
@@ -6,13 +6,16 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { getTMDBImageUrl } from "~/lib/tmdb-image";
-import { initTVProgress } from "~/services/episodes.server";
+import { initTVProgress, updateWatchedSeasons } from "~/services/episodes.server";
+import { parseWatchedSeasons } from "~/lib/seasons";
 import { refreshProviders } from "~/services/watchlist.server";
 import { getUserServiceIds } from "~/services/settings.server";
-import { getTrailer } from "~/services/tmdb.server";
+import { getTrailer, getTVDetails } from "~/services/tmdb.server";
+import type { TMDBSeasonSummary } from "~/lib/types";
 import { TrailerButton } from "~/components/trailer-button";
-import { ArrowLeft, Star, Check, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowLeft, Star, Check, Trash2, Eye, EyeOff } from "lucide-react";
+import { Suspense, useState } from "react";
+import { Skeleton } from "~/components/ui/skeleton";
 
 export async function loader({ params, context }: Route.LoaderArgs) {
   const db = getDb(context.cloudflare.env.DB);
@@ -81,6 +84,30 @@ export async function loader({ params, context }: Route.LoaderArgs) {
     (p) => p.providerId == null || !userServiceSet.has(p.providerId)
   );
 
+  // For TV shows without cached episodes, fetch season summary from TMDB (streamed)
+  const tmdbSeasonsPromise =
+    item.mediaType === "tv" && episodes.length === 0
+      ? getTVDetails(accessToken, item.tmdbId).then((details) =>
+          ((details as any).seasons as any[])
+            .filter((s: any) => s.season_number > 0)
+            .map(
+              (s: any): TMDBSeasonSummary => ({
+                id: s.id,
+                name: s.name,
+                seasonNumber: s.season_number,
+                episodeCount: s.episode_count,
+                airDate: s.air_date || null,
+                posterPath: s.poster_path || null,
+                overview: s.overview || "",
+              })
+            )
+        )
+      : null;
+
+  const activeSeasons = progress
+    ? parseWatchedSeasons(progress.watchedSeasons)
+    : null;
+
   return {
     item,
     yourServices,
@@ -92,6 +119,8 @@ export async function loader({ params, context }: Route.LoaderArgs) {
     seasonNumbers: Array.from(seasons.keys()).sort((a, b) => a - b),
     trailer,
     hasUserServices: userServiceIds.length > 0,
+    tmdbSeasonsPromise,
+    activeSeasons,
   };
 }
 
@@ -109,16 +138,75 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       .set({ status, updatedAt: new Date().toISOString() })
       .where(eq(schema.watchlistItems.id, id));
 
-    // If changing to "watching" for a TV show, init progress
+    // If changing to "watching" for a TV show, DON'T auto-init progress here.
+    // The user will pick seasons via the season picker, which calls startWatchingWithSeasons.
+    // But if progress already exists (e.g. re-setting to watching from dropped), keep it.
     if (status === "watching") {
       const item = await db.query.watchlistItems.findFirst({
         where: eq(schema.watchlistItems.id, id),
       });
       if (item?.mediaType === "tv") {
-        await initTVProgress(db, id, item.tmdbId, accessToken);
+        const existingProgress = await db.query.tvProgress.findFirst({
+          where: eq(schema.tvProgress.watchlistItemId, id),
+        });
+        if (existingProgress) {
+          // Progress already exists, no need to re-init
+          return { success: true };
+        }
+        // No progress yet — return a flag so the UI shows the season picker
+        return { success: true, needsSeasonPicker: true };
       }
     }
 
+    return { success: true };
+  }
+
+  if (intent === "startWatchingWithSeasons") {
+    const seasonsRaw = formData.get("seasons") as string;
+    const seasons = JSON.parse(seasonsRaw) as number[];
+
+    // Set status to watching
+    await db
+      .update(schema.watchlistItems)
+      .set({ status: "watching", updatedAt: new Date().toISOString() })
+      .where(eq(schema.watchlistItems.id, id));
+
+    const item = await db.query.watchlistItems.findFirst({
+      where: eq(schema.watchlistItems.id, id),
+    });
+    if (item) {
+      await initTVProgress(db, id, item.tmdbId, accessToken, seasons);
+    }
+
+    return { success: true };
+  }
+
+  if (intent === "toggleSeason") {
+    const seasonNumber = Number(formData.get("seasonNumber"));
+    const progress = await db.query.tvProgress.findFirst({
+      where: eq(schema.tvProgress.watchlistItemId, id),
+    });
+    if (!progress) return { error: "No progress found" };
+
+    const current = parseWatchedSeasons(progress.watchedSeasons);
+    let updated: number[];
+
+    if (current === null) {
+      // Currently all seasons active — toggling one off means all-except-this-one
+      const allSeasons = Array.from(
+        { length: progress.totalSeasons || 1 },
+        (_, i) => i + 1
+      );
+      updated = allSeasons.filter((s) => s !== seasonNumber);
+    } else if (current.includes(seasonNumber)) {
+      // Remove this season
+      updated = current.filter((s) => s !== seasonNumber);
+    } else {
+      // Add this season
+      updated = [...current, seasonNumber].sort((a, b) => a - b);
+    }
+
+    await updateWatchedSeasons(db, id, updated);
     return { success: true };
   }
 
@@ -174,16 +262,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     const episodeNumber = Number(formData.get("episodeNumber"));
     const now = new Date().toISOString();
 
-    // Get all episodes for this item
+    // Only mark episodes within the same season up to the target episode
     const allEpisodes = await db.query.episodes.findMany({
       where: eq(schema.episodes.watchlistItemId, id),
     });
 
     for (const ep of allEpisodes) {
       const shouldWatch =
-        ep.seasonNumber < seasonNumber ||
-        (ep.seasonNumber === seasonNumber &&
-          ep.episodeNumber <= episodeNumber);
+        ep.seasonNumber === seasonNumber &&
+        ep.episodeNumber <= episodeNumber;
 
       if (shouldWatch && !ep.watched) {
         await db
@@ -215,13 +302,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 }
 
 export default function ItemDetailPage() {
-  const { item, yourServices, otherServices, rent, buy, progress, seasons, seasonNumbers, trailer, hasUserServices } =
+  const { item, yourServices, otherServices, rent, buy, progress, seasons, seasonNumbers, trailer, hasUserServices, tmdbSeasonsPromise, activeSeasons } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher();
   const [selectedSeason, setSelectedSeason] = useState(
     seasonNumbers[0] || 1
   );
   const [noteValue, setNoteValue] = useState(item.note || "");
+  const [showSeasonPicker, setShowSeasonPicker] = useState(false);
+  const [pickerSeasons, setPickerSeasons] = useState<number[]>([]);
 
   const genres: string[] = (() => {
     try {
@@ -234,6 +323,38 @@ export default function ItemDetailPage() {
   const currentEpisodes = seasons[selectedSeason] || [];
 
   const hasAnyProvider = yourServices.length > 0 || otherServices.length > 0 || rent.length > 0 || buy.length > 0;
+
+  // Check if a season is active (for eye toggle display)
+  function isActive(seasonNum: number): boolean {
+    if (activeSeasons === null) return true;
+    return activeSeasons.includes(seasonNum);
+  }
+
+  // Handle status button click — intercept "watching" for TV shows without progress
+  function handleStatusClick(status: string) {
+    if (status === "watching" && item.mediaType === "tv" && !progress) {
+      // Show season picker instead of immediately setting status
+      setShowSeasonPicker(true);
+      return;
+    }
+    fetcher.submit(
+      { intent: "updateStatus", status },
+      { method: "post" }
+    );
+  }
+
+  // Confirm season picker selection
+  function confirmSeasonPicker() {
+    if (pickerSeasons.length === 0) return;
+    fetcher.submit(
+      {
+        intent: "startWatchingWithSeasons",
+        seasons: JSON.stringify(pickerSeasons),
+      },
+      { method: "post" }
+    );
+    setShowSeasonPicker(false);
+  }
 
   return (
     <div className="space-y-8">
@@ -440,12 +561,7 @@ export default function ItemDetailPage() {
           ).map((s) => (
             <button
               key={s.value}
-              onClick={() =>
-                fetcher.submit(
-                  { intent: "updateStatus", status: s.value },
-                  { method: "post" }
-                )
-              }
+              onClick={() => handleStatusClick(s.value)}
               className={`chip ${item.status === s.value ? "chip-active" : "chip-inactive"}`}
             >
               {s.label}
@@ -453,6 +569,92 @@ export default function ItemDetailPage() {
           ))}
         </div>
       </section>
+
+      {/* Season Picker (for TV shows being set to "watching") */}
+      {showSeasonPicker && (
+        <section className="space-y-4 rounded-xl border border-primary/30 bg-primary/5 p-5">
+          <div>
+            <h2 className="font-display text-lg font-bold tracking-tight">
+              Pick seasons to watch
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Select which seasons you want to track. You can change this later.
+            </p>
+          </div>
+
+          {tmdbSeasonsPromise ? (
+            <Suspense
+              fallback={
+                <div className="space-y-2">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <Skeleton key={i} className="h-10 w-full rounded-xl" />
+                  ))}
+                </div>
+              }
+            >
+              <Await resolve={tmdbSeasonsPromise}>
+                {(tmdbSeasons) => (
+                  <SeasonPickerGrid
+                    seasons={tmdbSeasons as TMDBSeasonSummary[]}
+                    selected={pickerSeasons}
+                    onToggle={(num) => {
+                      setPickerSeasons((prev) =>
+                        prev.includes(num)
+                          ? prev.filter((s) => s !== num)
+                          : [...prev, num].sort((a, b) => a - b)
+                      );
+                    }}
+                    onSelectAll={() => {
+                      const allNums = (tmdbSeasons as TMDBSeasonSummary[]).map((s) => s.seasonNumber);
+                      setPickerSeasons(allNums);
+                    }}
+                  />
+                )}
+              </Await>
+            </Suspense>
+          ) : (
+            // Fallback: if we already have episodes cached, show season numbers from those
+            <div className="flex flex-wrap gap-2">
+              {seasonNumbers.map((num) => (
+                <button
+                  key={num}
+                  onClick={() =>
+                    setPickerSeasons((prev) =>
+                      prev.includes(num)
+                        ? prev.filter((s) => s !== num)
+                        : [...prev, num].sort((a, b) => a - b)
+                    )
+                  }
+                  className={`chip ${
+                    pickerSeasons.includes(num) ? "chip-active" : "chip-inactive"
+                  }`}
+                >
+                  Season {num}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button
+              onClick={confirmSeasonPicker}
+              disabled={pickerSeasons.length === 0}
+              size="sm"
+              className="rounded-xl"
+            >
+              Start watching ({pickerSeasons.length} season{pickerSeasons.length !== 1 ? "s" : ""})
+            </Button>
+            <Button
+              onClick={() => setShowSeasonPicker(false)}
+              variant="ghost"
+              size="sm"
+              className="rounded-xl"
+            >
+              Cancel
+            </Button>
+          </div>
+        </section>
+      )}
 
       {/* Vibe */}
       <section className="space-y-3">
@@ -510,18 +712,41 @@ export default function ItemDetailPage() {
               Episodes
             </h2>
 
-            {/* Season selector */}
+            {/* Season selector with eye toggle */}
             <div className="flex gap-2 overflow-x-auto scrollbar-hide">
               {seasonNumbers.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSelectedSeason(s)}
-                  className={`chip ${
-                    selectedSeason === s ? "chip-active" : "chip-inactive"
-                  }`}
-                >
-                  Season {s}
-                </button>
+                <div key={s} className="flex items-center gap-0.5 flex-none">
+                  <button
+                    onClick={() => setSelectedSeason(s)}
+                    className={`chip ${
+                      selectedSeason === s ? "chip-active" : "chip-inactive"
+                    } ${!isActive(s) ? "opacity-40" : ""}`}
+                  >
+                    Season {s}
+                  </button>
+                  {progress && (
+                    <button
+                      onClick={() =>
+                        fetcher.submit(
+                          { intent: "toggleSeason", seasonNumber: String(s) },
+                          { method: "post" }
+                        )
+                      }
+                      className={`p-1 rounded-md transition-colors ${
+                        isActive(s)
+                          ? "text-primary hover:bg-primary/10"
+                          : "text-muted-foreground/40 hover:bg-muted/20"
+                      }`}
+                      title={isActive(s) ? "Stop tracking this season" : "Start tracking this season"}
+                    >
+                      {isActive(s) ? (
+                        <Eye className="h-3.5 w-3.5" />
+                      ) : (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
 
@@ -618,6 +843,63 @@ export default function ItemDetailPage() {
           </section>
         )}
 
+      {/* Season overview (TV shows without cached episodes) */}
+      {tmdbSeasonsPromise && !showSeasonPicker && (
+        <section className="space-y-5">
+          <h2 className="font-display text-xl font-bold tracking-tight">
+            Seasons
+          </h2>
+          <Suspense
+            fallback={
+              <div className="space-y-3">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-16 w-full rounded-xl" />
+                ))}
+              </div>
+            }
+          >
+            <Await resolve={tmdbSeasonsPromise}>
+              {(tmdbSeasons) => (
+                <div className="space-y-2">
+                  {(tmdbSeasons as TMDBSeasonSummary[]).map((season) => (
+                    <div
+                      key={season.id}
+                      className="flex items-center gap-4 rounded-xl border border-border/40 bg-card/30 px-4 py-3"
+                    >
+                      {season.posterPath && (
+                        <img
+                          src={getTMDBImageUrl(season.posterPath, "w92")!}
+                          alt=""
+                          className="h-14 w-10 rounded-lg object-cover ring-1 ring-white/5"
+                        />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold truncate">
+                          {season.name}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground/60">
+                          {season.episodeCount} episode{season.episodeCount !== 1 ? "s" : ""}
+                          {season.airDate && (
+                            <span>
+                              {" "}&middot;{" "}
+                              {new Date(season.airDate + "T00:00:00").toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                              })}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Await>
+          </Suspense>
+        </section>
+      )}
+
       {/* Delete */}
       <div className="pt-4">
         <fetcher.Form method="post">
@@ -632,6 +914,67 @@ export default function ItemDetailPage() {
             Remove from watchlist
           </Button>
         </fetcher.Form>
+      </div>
+    </div>
+  );
+}
+
+function SeasonPickerGrid({
+  seasons,
+  selected,
+  onToggle,
+  onSelectAll,
+}: {
+  seasons: TMDBSeasonSummary[];
+  selected: number[];
+  onToggle: (num: number) => void;
+  onSelectAll: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={onSelectAll}
+        className="text-xs font-medium text-primary hover:underline"
+      >
+        Select all
+      </button>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {seasons.map((season) => (
+          <button
+            key={season.id}
+            onClick={() => onToggle(season.seasonNumber)}
+            className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all ${
+              selected.includes(season.seasonNumber)
+                ? "border-primary/50 bg-primary/10"
+                : "border-border/40 bg-card/30 hover:border-border/60"
+            }`}
+          >
+            {season.posterPath && (
+              <img
+                src={getTMDBImageUrl(season.posterPath, "w92")!}
+                alt=""
+                className="h-10 w-7 rounded object-cover ring-1 ring-white/5"
+              />
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold truncate">{season.name}</p>
+              <p className="text-[10px] text-muted-foreground/60">
+                {season.episodeCount} ep{season.episodeCount !== 1 ? "s" : ""}
+              </p>
+            </div>
+            <div
+              className={`flex h-5 w-5 items-center justify-center rounded-md border transition-all ${
+                selected.includes(season.seasonNumber)
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border/60"
+              }`}
+            >
+              {selected.includes(season.seasonNumber) && (
+                <Check className="h-3 w-3" />
+              )}
+            </div>
+          </button>
+        ))}
       </div>
     </div>
   );

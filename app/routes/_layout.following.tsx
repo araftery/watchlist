@@ -9,6 +9,7 @@ import { Check, Calendar, Tv, Clock } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { useLayoutContext } from "~/lib/layout-context";
+import { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
 
 export async function loader({ context }: Route.LoaderArgs) {
   const db = getDb(context.cloudflare.env.DB);
@@ -39,14 +40,20 @@ export async function loader({ context }: Route.LoaderArgs) {
       });
 
       const today = new Date().toISOString().split("T")[0];
-      const airedEpisodes = episodes.filter(
+      const activeSeasonsRaw = parseWatchedSeasons(progress?.watchedSeasons ?? null);
+
+      // Filter all episode computations by active seasons
+      const activeEpisodes = episodes.filter((ep) =>
+        isSeasonActive(ep.seasonNumber, activeSeasonsRaw)
+      );
+      const airedEpisodes = activeEpisodes.filter(
         (ep) => ep.airDate && ep.airDate <= today
       );
       const unwatchedAired = airedEpisodes.filter((ep) => !ep.watched);
-      const totalWatched = episodes.filter((ep) => ep.watched).length;
+      const totalWatched = activeEpisodes.filter((ep) => ep.watched).length;
 
-      // Find next unwatched episode
-      const nextUnwatched = episodes
+      // Find next unwatched episode (within active seasons)
+      const nextUnwatched = activeEpisodes
         .filter((ep) => !ep.watched)
         .sort(
           (a, b) =>
@@ -54,8 +61,8 @@ export async function loader({ context }: Route.LoaderArgs) {
             a.episodeNumber - b.episodeNumber
         )[0];
 
-      // Find next upcoming episode (future air date)
-      const nextUpcoming = episodes
+      // Find next upcoming episode (future air date, within active seasons)
+      const nextUpcoming = activeEpisodes
         .filter((ep) => !ep.watched && ep.airDate && ep.airDate > today)
         .sort((a, b) => (a.airDate || "").localeCompare(b.airDate || ""))[0];
 
@@ -64,7 +71,7 @@ export async function loader({ context }: Route.LoaderArgs) {
         progress,
         providers,
         episodeCount: airedEpisodes.length,
-        totalEpisodes: episodes.length,
+        totalEpisodes: activeEpisodes.length,
         totalWatched,
         newEpisodeCount: unwatchedAired.length,
         nextUnwatched,

@@ -1,0 +1,1 @@
+ALTER TABLE `tv_progress` ADD `watched_seasons` text;

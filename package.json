@@ -11,7 +11,7 @@
     "preview": "npm run build && vite preview",
     "typecheck": "npm run cf-typegen && react-router typegen && tsc -b",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 execute watchlist-db --local --file=./drizzle/0000_abandoned_loners.sql && wrangler d1 execute watchlist-db --local --file=./drizzle/0001_crazy_swarm.sql"
+    "db:migrate:local": "wrangler d1 execute watchlist-db --local --file=./drizzle/0000_abandoned_loners.sql; wrangler d1 execute watchlist-db --local --file=./drizzle/0001_crazy_swarm.sql; wrangler d1 execute watchlist-db --local --file=./drizzle/0002_watched_seasons.sql"
   },
   "dependencies": {
     "@google/genai": "^1.42.0",

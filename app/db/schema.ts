@@ -72,6 +72,7 @@ export const tvProgress = sqliteTable("tv_progress", {
     enum: ["returning", "ended", "canceled", "in_production"],
   }),
   airDayOfWeek: text("air_day_of_week"),
+  watchedSeasons: text("watched_seasons"), // JSON array e.g. '[19,20]', null = all seasons
   lastCheckedAt: text("last_checked_at"),
 });
 
