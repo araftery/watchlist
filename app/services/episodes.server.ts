@@ -3,6 +3,7 @@ import type { Database } from "~/db";
 import { schema } from "~/db";
 import { getSeasonDetails, getTVDetails } from "./tmdb.server";
 import { isSeasonActive } from "~/lib/seasons";
+import { getTodayNY } from "~/lib/utils";
 export { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
 
 export async function initTVProgress(
@@ -162,7 +163,7 @@ export async function computeNewEpisodeCount(
   watchedSeasons?: number[] | null
 ): Promise<number> {
   const episodes = await getEpisodesForItem(db, watchlistItemId);
-  const today = new Date().toISOString().split("T")[0];
+  const today = getTodayNY();
 
   return episodes.filter(
     (ep) =>

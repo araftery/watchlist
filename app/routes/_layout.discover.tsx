@@ -16,6 +16,7 @@ import { PosterCard } from "~/components/poster-card";
 import { AddToWatchlistDialog } from "~/components/add-to-watchlist-dialog";
 import { ItemDetailsDialog } from "~/components/item-details-dialog";
 import { useLayoutContext } from "~/lib/layout-context";
+import { getTodayNY, getDateNY } from "~/lib/utils";
 import { Plus, Check } from "lucide-react";
 import { useState } from "react";
 
@@ -83,10 +84,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   } else if (category === "now_playing") {
     if (withGenres) {
       // Now playing with filter → use discover with date range
-      const today = new Date().toISOString().split("T")[0];
-      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .split("T")[0];
+      const today = getTodayNY();
+      const monthAgo = getDateNY(-30);
 
       if (type === "movie") {
         data = await discoverMovies(accessToken, {

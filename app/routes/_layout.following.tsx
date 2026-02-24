@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { useLayoutContext } from "~/lib/layout-context";
 import { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
+import { getTodayNY } from "~/lib/utils";
 
 export async function loader({ context }: Route.LoaderArgs) {
   const db = getDb(context.cloudflare.env.DB);
@@ -39,7 +40,7 @@ export async function loader({ context }: Route.LoaderArgs) {
         ),
       });
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = getTodayNY();
       const activeSeasonsRaw = parseWatchedSeasons(progress?.watchedSeasons ?? null);
 
       // Filter all episode computations by active seasons

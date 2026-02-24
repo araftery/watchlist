@@ -10,6 +10,7 @@ import { getTMDBImageUrl } from "~/lib/tmdb-image";
 import { PosterCard } from "~/components/poster-card";
 import { useLayoutContext } from "~/lib/layout-context";
 import { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
+import { getTodayNY, getDateNY } from "~/lib/utils";
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const db = getDb(context.cloudflare.env.DB);
@@ -21,10 +22,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const mediaType = url.searchParams.get("type") as "movie" | "tv" | null;
   const genre = url.searchParams.get("genre");
 
-  const today = new Date().toISOString().split("T")[0];
-  const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split("T")[0];
+  const today = getTodayNY();
+  const nextWeek = getDateNY(7);
 
   // Get all watching items
   const watchingConditions = [
