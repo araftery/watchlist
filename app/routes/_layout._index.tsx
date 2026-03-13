@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLoaderData, useSearchParams, useFetcher, Link } from "react-router";
 import { eq, and } from "drizzle-orm";
 import { getDb, schema } from "~/db";
@@ -8,6 +9,7 @@ import { Card } from "~/components/ui/card";
 import { Sparkles, Popcorn, Calendar } from "lucide-react";
 import { getTMDBImageUrl } from "~/lib/tmdb-image";
 import { PosterCard } from "~/components/poster-card";
+import { ItemBrowserSheet } from "~/components/item-browser-sheet";
 import { useLayoutContext } from "~/lib/layout-context";
 import { parseWatchedSeasons, isSeasonActive } from "~/lib/seasons";
 import { getTodayNY, getDateNY } from "~/lib/utils";
@@ -165,6 +167,7 @@ export default function HomePage() {
   const { userServiceIds } = useLayoutContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const pickFetcher = useFetcher();
+  const [browserIndex, setBrowserIndex] = useState<number | null>(null);
 
   const isPicking = pickFetcher.state !== "idle";
   const pickResult = pickFetcher.data as {
@@ -450,7 +453,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-            {newItems.map(({ item, providers }) => (
+            {newItems.map(({ item, providers }, index) => (
               <PosterCard
                 key={item.id}
                 id={item.id}
@@ -460,11 +463,20 @@ export default function HomePage() {
                 mediaType={item.mediaType}
                 providers={providers}
                 userServiceIds={userServiceIds}
+                onClick={() => setBrowserIndex(index)}
               />
             ))}
           </div>
         )}
       </section>
+
+      <ItemBrowserSheet
+        items={newItems}
+        selectedIndex={browserIndex}
+        onClose={() => setBrowserIndex(null)}
+        onNavigate={setBrowserIndex}
+        userServiceIds={userServiceIds}
+      />
     </div>
   );
 }

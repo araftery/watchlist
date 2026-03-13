@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useLoaderData, useSearchParams, Link } from "react-router";
 import { getDb, schema } from "~/db";
 import { eq, and, desc } from "drizzle-orm";
 import type { Route } from "./+types/_layout.watchlist";
 import { PosterCard } from "~/components/poster-card";
+import { ItemBrowserSheet } from "~/components/item-browser-sheet";
 import { List } from "lucide-react";
 import { useLayoutContext } from "~/lib/layout-context";
 
@@ -98,6 +100,7 @@ export default function WatchlistPage() {
   } = useLoaderData<typeof loader>();
   const { userServiceIds } = useLayoutContext();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [browserIndex, setBrowserIndex] = useState<number | null>(null);
 
   function setParam(key: string, value: string | null) {
     setSearchParams(
@@ -260,7 +263,7 @@ export default function WatchlistPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {items.map(({ item, providers }) => (
+          {items.map(({ item, providers }, index) => (
             <PosterCard
               key={item.id}
               id={item.id}
@@ -271,10 +274,19 @@ export default function WatchlistPage() {
               providers={providers}
               status={item.status}
               userServiceIds={userServiceIds}
+              onClick={() => setBrowserIndex(index)}
             />
           ))}
         </div>
       )}
+
+      <ItemBrowserSheet
+        items={items}
+        selectedIndex={browserIndex}
+        onClose={() => setBrowserIndex(null)}
+        onNavigate={setBrowserIndex}
+        userServiceIds={userServiceIds}
+      />
     </div>
   );
 }
